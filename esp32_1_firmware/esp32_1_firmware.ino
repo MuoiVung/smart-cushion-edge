@@ -169,10 +169,11 @@ void reconnect() {
 float convertNTCToTemperature(int rawAdc) {
   if (rawAdc <= 0 || rawAdc >= 4095) return 25.0f;
   
-  // Công thức cho sơ đồ: VCC --- [R 10k] --- [Chân 36] --- [NTC] --- GND
-  float resistance = 10000.0f * (float)rawAdc / (4095.0f - (float)rawAdc);
+  // Sơ đồ: VCC --- [NTC 100k] --- [Chân 36] --- [Trở 10k] --- GND
+  float resistance = 10000.0f * (4095.0f / (float)rawAdc - 1.0f);
   
-  float steinhart = log(resistance / 10000.0f) / 3950.0f;
+  // NTC của bạn là loại 100k (100,000 Ohm ở 25 độ C)
+  float steinhart = log(resistance / 100000.0f) / 3950.0f;
   steinhart += 1.0f / (25.0f + 273.15f);
   return (1.0f / steinhart) - 273.15f;
 }
