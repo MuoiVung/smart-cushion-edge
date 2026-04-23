@@ -1,13 +1,18 @@
 /**
- * Smart Cushion - ESP32 #1 Firmware
- * 
- * Hardware: ESP32 (e.g., ESP-32S / DOIT DevKit V1)
- * Libraries required:
- *  - PubSubClient (by Nick O'Leary)
- *  - ArduinoJson (by Benoit Blanchon)
- * 
- * Function: Reads the 4 corner FSR sensors and the NTC temperature sensor,
- * then publishes to the Fog Node MQTT broker.
+ * Smart Cushion – ESP32 #1 Firmware
+ *
+ * Role        : Cụm Trái + Cảm biến Nhiệt độ + Actuator rung
+ * Sensors     : fsr_front_left, fsr_front_right, fsr_back_left,
+ *               fsr_back_right (Analog ADC 0–4095) + NTC thermistor
+ * Actuator    : Vibration motor (PWM on PIN_MOTOR)
+ *
+ * MQTT Topics :
+ *   Publish   → cushion/raw      (JSON, 0.5 s interval)
+ *   Subscribe ← cushion/command  (JSON command from Fog)
+ *
+ * Required Libraries:
+ *   - PubSubClient  (Nick O'Leary)
+ *   - ArduinoJson   (Benoit Blanchon)
  */
 
 #include <WiFi.h>
@@ -15,161 +20,196 @@
 #include <ArduinoJson.h>
 #include "esp32_secrets.h"
 
-// ==========================================
-// --- HARWARE PINS ---
-// Both ESP32s use the exact same pins for reading
-#define PIN_SENSOR_1 32
-#define PIN_SENSOR_2 33
-#define PIN_SENSOR_3 34
-#define PIN_SENSOR_4 35
-#define PIN_SENSOR_5 36 // NTC on ESP1, FSR on ESP2
-// ==========================================
+// ── Hardware Pins ──────────────────────────────────────────────────────────
+#define PIN_FSR_FL   32   // fsr_front_left
+#define PIN_FSR_FR   33   // fsr_front_right
+#define PIN_FSR_BL   34   // fsr_back_left
+#define PIN_FSR_BR   35   // fsr_back_right
+#define PIN_NTC      36   // NTC thermistor → temperature
+#define PIN_MOTOR    25   // PWM motor output (LEDC channel 0)
 
-const int mqtt_port = 1883;
-const char* topic_raw = "cushion/raw";
-const char* topic_control = "cushion/control";
+// ── LEDC (PWM) config ──────────────────────────────────────────────────────
+#define LEDC_CHANNEL   0
+#define LEDC_FREQ_HZ   5000
+#define LEDC_RESOLUTION 8   // 8-bit → 0–255
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+// ── MQTT ───────────────────────────────────────────────────────────────────
+const int    mqtt_port       = 1883;
+const char*  topic_raw       = "cushion/raw";
+const char*  topic_command   = "cushion/command";
 
-unsigned long lastMsg = 0;
+// ── Globals ────────────────────────────────────────────────────────────────
+WiFiClient    espClient;
+PubSubClient  client(espClient);
 
+unsigned long lastPublish     = 0;
+const unsigned long PUB_INTERVAL = 500;   // 0.5 s
+
+bool          vibration_active = false;   // current motor state
+
+// ── Forward declarations ───────────────────────────────────────────────────
+void setup_wifi();
+void reconnect();
+void callback(char* topic, byte* payload, unsigned int length);
+float convertNTCToTemperature(int analogValue);
+void  setMotor(bool active, int intensity = 0);
+void  runPattern(const char* pattern, int intensity);
+
+// ── Setup ──────────────────────────────────────────────────────────────────
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT); 
-  digitalWrite(LED_BUILTIN, LOW);
-  
   Serial.begin(115200);
 
-  // Setup pins
-  pinMode(PIN_SENSOR_1, INPUT);
-  pinMode(PIN_SENSOR_2, INPUT);
-  pinMode(PIN_SENSOR_3, INPUT);
-  pinMode(PIN_SENSOR_4, INPUT);
-  pinMode(PIN_SENSOR_5, INPUT);
+  // FSR inputs
+  pinMode(PIN_FSR_FL, INPUT);
+  pinMode(PIN_FSR_FR, INPUT);
+  pinMode(PIN_FSR_BL, INPUT);
+  pinMode(PIN_FSR_BR, INPUT);
+  pinMode(PIN_NTC,    INPUT);
+
+  // Motor PWM via LEDC
+  ledcSetup(LEDC_CHANNEL, LEDC_FREQ_HZ, LEDC_RESOLUTION);
+  ledcAttachPin(PIN_MOTOR, LEDC_CHANNEL);
+  ledcWrite(LEDC_CHANNEL, 0);   // Motor off at boot
 
   setup_wifi();
-  
+
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+  client.setBufferSize(512);
 }
 
+// ── WiFi ───────────────────────────────────────────────────────────────────
 void setup_wifi() {
   delay(10);
-  Serial.print("\nConnecting to WiFi: ");
-  Serial.println(ssid);
-
+  Serial.printf("\nConnecting to WiFi: %s\n", ssid);
   WiFi.begin(ssid, password);
-
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
+// ── MQTT Command Callback ──────────────────────────────────────────────────
 /**
- * Handle incoming MQTT commands (Fog -> ESP32)
+ * Fog → Edge command schema (cushion/command):
+ *   { "device_id": "esp32-1", "command": "vibrate",
+ *     "active": true, "pattern": "short_triple", "intensity": 255 }
+ *   { "device_id": "esp32-1", "command": "vibrate", "active": false }
  */
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("\n[MQTT RECEIVED] Topic: "); 
-  Serial.println(topic);
-  
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, payload, length);
-  
-  if (error) {
-    Serial.print("JSON Parse failed: ");
-    Serial.println(error.f_str());
+  Serial.printf("\n[MQTT CMD] Topic: %s\n", topic);
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, payload, length);
+  if (err) {
+    Serial.printf("JSON parse error: %s\n", err.f_str());
     return;
   }
 
-  const char* command = doc["command"]; 
-  int duration = doc["duration_ms"];    
-  
-  if (strcmp(command, "vibrate") == 0) {
-    Serial.printf(">>> ALERT: Vibrating for %d ms! <<<\n", duration);
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(duration);
-    digitalWrite(LED_BUILTIN, LOW);
+  // Filter by device_id
+  const char* target = doc["device_id"] | "";
+  if (strlen(target) > 0 && strcmp(target, "esp32-1") != 0) return;
+
+  const char* command = doc["command"] | "";
+  if (strcmp(command, "vibrate") != 0) return;
+
+  bool   active    = doc["active"]    | false;
+  int    intensity = doc["intensity"] | 200;
+  const char* pattern = doc["pattern"] | "short_triple";
+
+  if (active) {
+    runPattern(pattern, intensity);
+    vibration_active = true;
+  } else {
+    setMotor(false);
+    vibration_active = false;
   }
 }
 
+// ── Motor helpers ──────────────────────────────────────────────────────────
+void setMotor(bool active, int intensity) {
+  ledcWrite(LEDC_CHANNEL, active ? constrain(intensity, 0, 255) : 0);
+}
+
+void runPattern(const char* pattern, int intensity) {
+  intensity = constrain(intensity, 0, 255);
+
+  if (strcmp(pattern, "short_triple") == 0) {
+    for (int i = 0; i < 3; i++) {
+      setMotor(true, intensity); delay(150);
+      setMotor(false);          delay(100);
+    }
+  } else if (strcmp(pattern, "long_single") == 0) {
+    setMotor(true, intensity); delay(800);
+    setMotor(false);
+  } else {
+    // Default: single short buzz
+    setMotor(true, intensity); delay(300);
+    setMotor(false);
+  }
+}
+
+// ── MQTT Reconnect ─────────────────────────────────────────────────────────
 void reconnect() {
   while (!client.connected()) {
-    Serial.printf("\nAttempting MQTT connection to '%s'...\n", mqtt_server);
-    
-    String clientId = "ESP32-1-Cushion-";
-    clientId += String(random(0xffff), HEX);
-    
+    Serial.printf("\nConnecting MQTT to %s ...\n", mqtt_server);
+    String clientId = "ESP32-1-" + String(random(0xffff), HEX);
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-      Serial.println(">>> FOG NODE CONNECTED! <<<");
-      client.subscribe(topic_control);
+      Serial.println(">>> FOG NODE CONNECTED <<<");
+      client.subscribe(topic_command);
+      Serial.printf("Subscribed: %s\n", topic_command);
     } else {
-      Serial.print("Failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" -> Retrying in 5 seconds");
+      Serial.printf("Failed rc=%d – retry in 5 s\n", client.state());
       delay(5000);
     }
   }
 }
 
-float convertNTCToTemperature(int analogValue) {
-  // Dummy conversion for NTC
-  if(analogValue == 0) return 25.0;
-  float resistance = (4095.0 / analogValue) - 1.0;
-  resistance = 10000.0 / resistance;
-  float steinhart;
-  steinhart = resistance / 10000.0;     
-  steinhart = log(steinhart);                  
-  steinhart /= 3950.0;                  
-  steinhart += 1.0 / (25.0 + 273.15); 
-  steinhart = 1.0 / steinhart;                 
-  steinhart -= 273.15;                         
-  return steinhart;
+// ── NTC → Temperature ──────────────────────────────────────────────────────
+float convertNTCToTemperature(int rawAdc) {
+  if (rawAdc <= 0) return 25.0f;
+  // Steinhart-Hart (B=3950, R_ref=10kΩ, T_ref=25°C)
+  float resistance = 10000.0f * (4095.0f / rawAdc - 1.0f);
+  float steinhart  = log(resistance / 10000.0f) / 3950.0f;
+  steinhart       += 1.0f / (25.0f + 273.15f);
+  return (1.0f / steinhart) - 273.15f;
 }
 
+// ── Main Loop ──────────────────────────────────────────────────────────────
 void loop() {
-  if (!client.connected()) {
-    reconnect();
-  }
-  client.loop(); 
+  if (!client.connected()) reconnect();
+  client.loop();
 
   unsigned long now = millis();
-  
-  // Publish to MQTT every 500ms for smoother real-time data
-  if (now - lastMsg > 500) {
-    lastMsg = now;
+  if (now - lastPublish >= PUB_INTERVAL) {
+    lastPublish = now;
 
-    // Read real FSR pins
-    int fl = analogRead(PIN_SENSOR_1);
-    int fr = analogRead(PIN_SENSOR_2);
-    int bl = analogRead(PIN_SENSOR_3);
-    int br = analogRead(PIN_SENSOR_4);
-    
-    // Read NTC pin and convert
-    int ntcRaw = analogRead(PIN_SENSOR_5); 
-    float temp = convertNTCToTemperature(ntcRaw);
+    int   fl   = analogRead(PIN_FSR_FL);
+    int   fr   = analogRead(PIN_FSR_FR);
+    int   bl   = analogRead(PIN_FSR_BL);
+    int   br   = analogRead(PIN_FSR_BR);
+    float temp = convertNTCToTemperature(analogRead(PIN_NTC));
 
-    StaticJsonDocument<256> doc;
+    // Build JSON — matches system_architecture.md Interface 01
+    StaticJsonDocument<384> doc;
     doc["device_id"] = "esp32-1";
-    doc["timestamp"] = now / 1000.0;
+    doc["timestamp"] = now / 1000.0f;
 
     JsonObject sensors = doc.createNestedObject("sensors");
     sensors["fsr_front_left"]  = fl;
     sensors["fsr_front_right"] = fr;
     sensors["fsr_back_left"]   = bl;
     sensors["fsr_back_right"]  = br;
-    sensors["temperature"]     = temp; 
+    sensors["temperature"]     = round(temp * 10.0f) / 10.0f;
 
-    char buffer[256];
+    JsonObject actuator = doc.createNestedObject("actuator");
+    actuator["vibration_status"] = vibration_active;
+
+    char buffer[384];
     serializeJson(doc, buffer);
-    
     client.publish(topic_raw, buffer);
-    
-    Serial.print("Published ESP1: ");
-    Serial.println(buffer);
+
+    Serial.printf("[ESP32-1] %s\n", buffer);
   }
 }
