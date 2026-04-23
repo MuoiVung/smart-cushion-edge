@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Arduino build artifacts
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE cache
+.arduino15/
+
+# Secrets (keep template, ignore actual secrets)
+esp32_secrets.h
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.env
