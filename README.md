@@ -1,34 +1,21 @@
-# smart-cushion-edge
+# ErgoVita - Smart Cushion Edge (Firmware)
 
-ESP32 firmware for the Smart Cushion edge devices. This repository contains the Arduino sketches for two ESP32 nodes that collect pressure sensor data and transmit it via MQTT to the fog node.
+This repository contains the ESP32 firmware for the Smart Cushion system.
 
-## Structure
+## 📂 Structure
+-   `esp32_1_firmware/`: Controls the Left FSR cluster, Temperature sensor, and Vibration Motor.
+-   `esp32_2_firmware/`: Controls the Middle and Right FSR clusters.
+-   `esp32_secrets.h`: Shared network and MQTT credentials (WiFi SSID, Password, Fog Node IP).
 
-```
-smart-cushion-edge/
-├── esp32_1_firmware/          # Firmware for ESP32 Node 1 (seat sensors)
-│   └── esp32_1_firmware.ino
-├── esp32_2_firmware/          # Firmware for ESP32 Node 2 (back sensors)
-│   └── esp32_2_firmware.ino
-├── esp32_secrets.h.template   # WiFi & MQTT credentials template
-└── .gitignore
-```
+## 🛠️ Setup
+1.  Open the `.ino` files in Arduino IDE or VS Code (PlatformIO).
+2.  Install required libraries:
+    -   `PubSubClient` (MQTT)
+    -   `ArduinoJson`
+3.  Configure `esp32_secrets.h` with your local WiFi and Fog Node IP.
+4.  Flash `esp32_1_firmware` to the primary ESP32.
+5.  Flash `esp32_2_firmware` to the secondary ESP32.
 
-## Setup
-
-1. Copy `esp32_secrets.h.template` → `esp32_secrets.h`
-2. Fill in your WiFi SSID, password, and MQTT broker IP in `esp32_secrets.h`
-3. Open the desired firmware folder in Arduino IDE
-4. Select **ESP32 Dev Module** as the board
-5. Install required libraries:
-   - `PubSubClient` (MQTT)
-   - `ArduinoJson`
-   - `WiFi` (built-in)
-6. Upload to the ESP32 device
-
-## Dependencies
-
-- Arduino IDE 2.x
-- ESP32 board package
-- PubSubClient
-- ArduinoJson
+## 📡 Data Flow (Interface 01 & 05)
+-   **Output**: Raw FSR ADC values (0-4095) sent to `cushion/raw` topic every 0.5s.
+-   **Input**: Commands received on `cushion/command` topic to trigger vibration alerts.
