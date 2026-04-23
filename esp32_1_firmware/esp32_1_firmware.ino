@@ -66,10 +66,9 @@ void setup() {
   pinMode(PIN_FSR_BR, INPUT);
   pinMode(PIN_NTC,    INPUT);
 
-  // Motor PWM via LEDC
-  ledcSetup(LEDC_CHANNEL, LEDC_FREQ_HZ, LEDC_RESOLUTION);
-  ledcAttachPin(PIN_MOTOR, LEDC_CHANNEL);
-  ledcWrite(LEDC_CHANNEL, 0);   // Motor off at boot
+  // Motor PWM via LEDC (ESP32 Core 3.x API)
+  ledcAttach(PIN_MOTOR, LEDC_FREQ_HZ, LEDC_RESOLUTION);
+  ledcWrite(PIN_MOTOR, 0);   // Motor off at boot
 
   setup_wifi();
 
@@ -129,7 +128,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 // ── Motor helpers ──────────────────────────────────────────────────────────
 void setMotor(bool active, int intensity) {
-  ledcWrite(LEDC_CHANNEL, active ? constrain(intensity, 0, 255) : 0);
+  ledcWrite(PIN_MOTOR, active ? constrain(intensity, 0, 255) : 0);
 }
 
 void runPattern(const char* pattern, int intensity) {
@@ -168,11 +167,13 @@ void reconnect() {
 
 // ── NTC → Temperature ──────────────────────────────────────────────────────
 float convertNTCToTemperature(int rawAdc) {
-  if (rawAdc <= 0) return 25.0f;
-  // Steinhart-Hart (B=3950, R_ref=10kΩ, T_ref=25°C)
-  float resistance = 10000.0f * (4095.0f / rawAdc - 1.0f);
-  float steinhart  = log(resistance / 10000.0f) / 3950.0f;
-  steinhart       += 1.0f / (25.0f + 273.15f);
+  if (rawAdc <= 0 || rawAdc >= 4095) return 25.0f;
+  
+  // Công thức cho sơ đồ: VCC --- [R 10k] --- [Chân 36] --- [NTC] --- GND
+  float resistance = 10000.0f * (float)rawAdc / (4095.0f - (float)rawAdc);
+  
+  float steinhart = log(resistance / 10000.0f) / 3950.0f;
+  steinhart += 1.0f / (25.0f + 273.15f);
   return (1.0f / steinhart) - 273.15f;
 }
 
