@@ -264,12 +264,12 @@ void loop() {
     Serial.printf("[ESP32-1] %s\n", buffer);
   }
 
-  // Safety Timeout: Tự động ngắt motor nếu rung quá lâu (đề phòng mất kết nối)
+  // Safety Timeout: Tự động ngắt motor nếu mất kết nối hoặc rung quá lâu
   if (vibration_active) {
-    if (millis() - vibration_start_ms > MAX_VIBRATION_DURATION) {
+    if (!client.connected() || (millis() - vibration_start_ms > MAX_VIBRATION_DURATION)) {
       setMotor(false);
       vibration_active = false;
-      Serial.println("[SAFETY] Vibration timeout - auto stop");
+      Serial.println("[SAFETY] Vibration stopped: Connection lost or timeout.");
     }
   }
 }
