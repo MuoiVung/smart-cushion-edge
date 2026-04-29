@@ -72,7 +72,8 @@ void setup() {
 
   setup_wifi();
 
-  client.setServer(mqtt_server, mqtt_port);
+  // Initial server setup (will be updated in reconnect if needed)
+  client.setServer(mqtt_servers[0], mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);
 }
@@ -152,16 +153,28 @@ void runPattern(const char* pattern, int intensity) {
 // ── MQTT Reconnect ─────────────────────────────────────────────────────────
 void reconnect() {
   while (!client.connected()) {
-    Serial.printf("\nConnecting MQTT to %s ...\n", mqtt_server);
-    String clientId = "ESP32-1-" + String(random(0xffff), HEX);
-    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-      Serial.println(">>> FOG NODE CONNECTED <<<");
-      client.subscribe(topic_command);
-      Serial.printf("Subscribed: %s\n", topic_command);
-    } else {
-      Serial.printf("Failed rc=%d – retry in 5 s\n", client.state());
-      delay(5000);
+    for (int i = 0; i < num_servers; i++) {
+      const char* current_server = mqtt_servers[i];
+      Serial.printf("\nTrying Fog Node at %s ...\n", current_server);
+      client.setServer(current_server, mqtt_port);
+
+      String clientId = "ESP32-1-" + String(random(0xffff), HEX);
+      if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+        Serial.printf(">>> CONNECTED TO FOG NODE AT %s <<<\n", current_server);
+        client.subscribe(topic_command);
+        Serial.printf("Subscribed: %s\n", topic_command);
+        return; // Success!
+      } else {
+        Serial.printf("Failed (rc=%d)\n", client.state());
+      }
+      
+      if (i < num_servers - 1) {
+        delay(1000); // Wait a bit before trying the next IP
+      }
     }
+    
+    Serial.println("Could not connect to any Fog Node. Retrying in 5s...");
+    delay(5000);
   }
 }
 

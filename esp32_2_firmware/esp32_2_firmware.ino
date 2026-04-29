@@ -14,29 +14,29 @@
  *   - ArduinoJson   (Benoit Blanchon)
  */
 
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
 #include "esp32_secrets.h"
+#include <ArduinoJson.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
 
 // ── Hardware Pins ──────────────────────────────────────────────────────────
 // Pin mapping: 32(FM), 33(MM), 34(BM), 35(ML), 36(MR)
-#define PIN_FSR_FM   32   // fsr_front_mid
-#define PIN_FSR_MM   33   // fsr_mid_mid   (center)
-#define PIN_FSR_BM   34   // fsr_back_mid
-#define PIN_FSR_ML   35   // fsr_mid_left
-#define PIN_FSR_MR   36   // fsr_mid_right
+#define PIN_FSR_FM 32 // fsr_front_mid
+#define PIN_FSR_MM 33 // fsr_mid_mid   (center)
+#define PIN_FSR_BM 34 // fsr_back_mid
+#define PIN_FSR_ML 35 // fsr_mid_left
+#define PIN_FSR_MR 36 // fsr_mid_right
 
 // ── MQTT ───────────────────────────────────────────────────────────────────
-const int    mqtt_port   = 1883;
-const char*  topic_raw   = "cushion/raw";
+const int mqtt_port = 1883;
+const char *topic_raw = "cushion/raw";
 
 // ── Globals ────────────────────────────────────────────────────────────────
-WiFiClient    espClient;
-PubSubClient  client(espClient);
+WiFiClient espClient;
+PubSubClient client(espClient);
 
-unsigned long lastPublish    = 0;
-const unsigned long PUB_INTERVAL = 500;   // 0.5 s
+unsigned long lastPublish = 0;
+const unsigned long PUB_INTERVAL = 500; // 0.5 s
 
 // ── Forward declarations ───────────────────────────────────────────────────
 void setup_wifi();
@@ -54,7 +54,8 @@ void setup() {
 
   setup_wifi();
 
-  client.setServer(mqtt_server, mqtt_port);
+  // Initial server setup
+  client.setServer(mqtt_servers[0], mqtt_port);
   client.setBufferSize(384);
 }
 
@@ -67,27 +68,40 @@ void setup_wifi() {
     delay(500);
     Serial.print(".");
   }
-  Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("\nWiFi connected! IP: %s\n",
+                WiFi.localIP().toString().c_str());
 }
 
 // ── MQTT Reconnect ─────────────────────────────────────────────────────────
 void reconnect() {
   while (!client.connected()) {
-    Serial.printf("\nConnecting MQTT to %s ...\n", mqtt_server);
-    String clientId = "ESP32-2-" + String(random(0xffff), HEX);
-    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-      Serial.println(">>> FOG NODE CONNECTED <<<");
-      // ESP32-2 is send-only; no command subscription needed
-    } else {
-      Serial.printf("Failed rc=%d – retry in 5 s\n", client.state());
-      delay(5000);
+    for (int i = 0; i < num_servers; i++) {
+      const char *current_server = mqtt_servers[i];
+      Serial.printf("\nTrying Fog Node at %s ...\n", current_server);
+      client.setServer(current_server, mqtt_port);
+
+      String clientId = "ESP32-2-" + String(random(0xffff), HEX);
+      if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+        Serial.printf(">>> CONNECTED TO FOG NODE AT %s <<<\n", current_server);
+        return; // Success!
+      } else {
+        Serial.printf("Failed (rc=%d)\n", client.state());
+      }
+
+      if (i < num_servers - 1) {
+        delay(1000); // Wait a bit before trying the next IP
+      }
     }
+
+    Serial.println("Could not connect to any Fog Node. Retrying in 5s...");
+    delay(5000);
   }
 }
 
 // ── Main Loop ──────────────────────────────────────────────────────────────
 void loop() {
-  if (!client.connected()) reconnect();
+  if (!client.connected())
+    reconnect();
   client.loop();
 
   unsigned long now = millis();
@@ -107,9 +121,9 @@ void loop() {
 
     JsonObject sensors = doc.createNestedObject("sensors");
     sensors["fsr_front_mid"] = fm;
-    sensors["fsr_mid_mid"]   = mm;
-    sensors["fsr_back_mid"]  = bm;
-    sensors["fsr_mid_left"]  = ml;
+    sensors["fsr_mid_mid"] = mm;
+    sensors["fsr_back_mid"] = bm;
+    sensors["fsr_mid_left"] = ml;
     sensors["fsr_mid_right"] = mr;
 
     char buffer[256];
