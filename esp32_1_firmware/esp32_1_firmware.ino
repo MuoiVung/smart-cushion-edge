@@ -46,6 +46,8 @@ unsigned long lastPublish = 0;
 const unsigned long PUB_INTERVAL = 500; // 0.5 s
 
 bool vibration_active = false; // current motor state
+unsigned long vibration_start_ms = 0;
+const unsigned long MAX_VIBRATION_DURATION = 10000; // 10 seconds safety timeout
 
 // -- Forward declarations ---------------------------------------------------
 void setup_wifi();
@@ -69,6 +71,9 @@ void setup() {
   // Motor PWM via LEDC (ESP32 Core 3.x API)
   ledcAttach(PIN_MOTOR, LEDC_FREQ_HZ, LEDC_RESOLUTION);
   ledcWrite(PIN_MOTOR, 0); // Motor off at boot
+
+  // Cấu hình ADC dải 0-3.3V
+  analogSetAttenuation(ADC_11db);
 
   setup_wifi();
 
@@ -127,6 +132,7 @@ void callback(char *topic, byte *payload, unsigned int length) {
     } else {
       // Chế độ rung liên tục (không có delay)
       setMotor(true, intensity);
+      vibration_start_ms = millis(); // Record start time for safety timeout
     }
     vibration_active = true;
   } else {
@@ -192,16 +198,26 @@ void reconnect() {
 
 // ── NTC → Temperature ──────────────────────────────────────────────────────
 float convertNTCToTemperature(int rawAdc) {
-  if (rawAdc <= 0 || rawAdc >= 4095)
-    return 25.0f;
+  if (rawAdc <= 50 || rawAdc >= 4000) return -99.0f;
 
-  // Sơ đồ: VCC --- [NTC 100k] --- [Chân 36] --- [Trở 10k] --- GND
-  float resistance = 10000.0f * (4095.0f / (float)rawAdc - 1.0f);
+  // Sơ đồ: VCC --- [NTC 10k] --- [Chân 36] --- [Trở 1k] --- GND
+  float seriesResistor = 1000.0f; 
+  float resistance = seriesResistor * (4095.0f / (float)rawAdc - 1.0f);
 
-  // NTC của bạn là loại 100k (100,000 Ohm ở 25 độ C)
-  float steinhart = log(resistance / 100000.0f) / 3950.0f;
+  // NTC 10k
+  float nominalResistance = 10000.0f; 
+  float steinhart = log(resistance / nominalResistance) / 3950.0f;
   steinhart += 1.0f / (25.0f + 273.15f);
-  return (1.0f / steinhart) - 273.15f;
+  float calcTemp = (1.0f / steinhart) - 273.15f;
+
+  // Hiệu chỉnh: Cộng thêm bù nhiệt độ nếu cảm biến đọc thấp hơn thực tế
+  float TEMP_OFFSET = 15.0f; 
+  float finalTemp = calcTemp + TEMP_OFFSET;
+
+  Serial.printf("[DEBUG] NTC ADC: %d, Calc: %.1f C, Final: %.1f C\n", 
+                rawAdc, calcTemp, finalTemp);
+
+  return finalTemp;
 }
 
 // ── Main Loop ──────────────────────────────────────────────────────────────
@@ -218,7 +234,13 @@ void loop() {
     int fr = analogRead(PIN_FSR_FR);
     int bl = analogRead(PIN_FSR_BL);
     int br = analogRead(PIN_FSR_BR);
-    float temp = convertNTCToTemperature(analogRead(PIN_NTC));
+    long ntcSum = 0;
+    for (int i = 0; i < 20; i++) {
+      ntcSum += analogRead(PIN_NTC);
+      delay(1);
+    }
+    int ntcAvg = ntcSum / 20;
+    float temp = convertNTCToTemperature(ntcAvg);
 
     // Build JSON — matches system_architecture.md Interface 01
     StaticJsonDocument<384> doc;
@@ -240,5 +262,14 @@ void loop() {
     client.publish(topic_raw, buffer);
 
     Serial.printf("[ESP32-1] %s\n", buffer);
+  }
+
+  // Safety Timeout: Tự động ngắt motor nếu rung quá lâu (đề phòng mất kết nối)
+  if (vibration_active) {
+    if (millis() - vibration_start_ms > MAX_VIBRATION_DURATION) {
+      setMotor(false);
+      vibration_active = false;
+      Serial.println("[SAFETY] Vibration timeout - auto stop");
+    }
   }
 }
