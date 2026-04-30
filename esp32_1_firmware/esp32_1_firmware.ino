@@ -36,7 +36,7 @@
 // -- MQTT -------------------------------------------------------------------
 const int mqtt_port = 1883;
 const char *topic_raw = "cushion/raw";
-const char *topic_command = "cushion/command";
+const char *topic_command = "cushion/control";
 
 // -- Globals ----------------------------------------------------------------
 WiFiClient espClient;
