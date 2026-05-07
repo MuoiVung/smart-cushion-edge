@@ -81,6 +81,7 @@ void setup() {
   client.setServer(mqtt_servers[0], mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);
+  client.setKeepAlive(10); // Detect disconnection faster (10s)
 }
 
 // ── WiFi ───────────────────────────────────────────────────────────────────

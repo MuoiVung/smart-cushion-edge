@@ -57,6 +57,7 @@ void setup() {
   // Initial server setup
   client.setServer(mqtt_servers[0], mqtt_port);
   client.setBufferSize(384);
+  client.setKeepAlive(10); // Detect disconnection faster (10s)
 }
 
 // ── WiFi ───────────────────────────────────────────────────────────────────
