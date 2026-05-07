@@ -61,39 +61,51 @@ void setup() {
 
 // ── WiFi ───────────────────────────────────────────────────────────────────
 void setup_wifi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+
   delay(10);
-  Serial.printf("\nConnecting to WiFi: %s\n", ssid);
+  Serial.printf("\n[WiFi] Connecting to: %s\n", ssid);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
+
+  int retry_count = 0;
+  while (WiFi.status() != WL_CONNECTED && retry_count < 20) {
     delay(500);
     Serial.print(".");
+    retry_count++;
   }
-  Serial.printf("\nWiFi connected! IP: %s\n",
-                WiFi.localIP().toString().c_str());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.println("\n[WiFi] Connection failed, will retry later.");
+  }
 }
 
 // ── MQTT Reconnect ─────────────────────────────────────────────────────────
 void reconnect() {
   while (!client.connected()) {
+    // Đảm bảo WiFi vẫn còn trước khi thử MQTT
+    if (WiFi.status() != WL_CONNECTED) {
+      setup_wifi();
+    }
+
     for (int i = 0; i < num_servers; i++) {
       const char *current_server = mqtt_servers[i];
-      Serial.printf("\nTrying Fog Node at %s ...\n", current_server);
+      Serial.printf("\n[MQTT] Trying Fog Node at %s ...\n", current_server);
       client.setServer(current_server, mqtt_port);
 
       String clientId = "ESP32-2-" + String(random(0xffff), HEX);
       if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-        Serial.printf(">>> CONNECTED TO FOG NODE AT %s <<<\n", current_server);
-        return; // Success!
+        Serial.printf(">>> [MQTT] CONNECTED TO %s <<<\n", current_server);
+        client.subscribe("cushion/status"); // Nghe tín hiệu alive từ Fog
+        return; 
       } else {
-        Serial.printf("Failed (rc=%d)\n", client.state());
+        Serial.printf("[MQTT] Failed, rc=%d\n", client.state());
       }
-
-      if (i < num_servers - 1) {
-        delay(1000); // Wait a bit before trying the next IP
-      }
+      delay(500);
     }
 
-    Serial.println("Could not connect to any Fog Node. Retrying in 5s...");
+    Serial.println("[MQTT] All servers failed. Retrying in 5s...");
     delay(5000);
   }
 }
